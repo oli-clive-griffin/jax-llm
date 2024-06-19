@@ -1,7 +1,9 @@
 import jax
+from dataclasses import dataclass
 from jax import random, Array
 import jax.numpy as jnp
 from einops import einsum, rearrange
+import jax.nn
 
 def mha(residual_BSDm: Array, w_qkv_HDm3Dh):
     '''
@@ -82,6 +84,19 @@ def layer_norm(x, epsilon=1e-5):
     std = jnp.std(x, axis=-1, keepdims=True)
     return (x - mean) / (std + epsilon)
 
+
+@dataclass
+class ModelCfg:
+    D_vocab: int
+    D_model: int
+    D_head: int
+    n_heads: int
+    D_ff: int
+    n_blocks: int
+
+    def __post_init__(self):
+        assert self.D_head * self.n_heads == self.D_model
+
 def model(x_BSDi: Array, params):
     w_DiDm, blocks_params, w_DmDi = params
     x_BSDm = embed(x_BSDi, w_DiDm)
@@ -89,59 +104,64 @@ def model(x_BSDi: Array, params):
     x_BSDi = unembed(x_BSDm, w_DmDi)
     return x_BSDi
 
-def make_model_weights(D_vocab, D_model, D_head, n_heads, D_ff, n_blocks, key):
-    w_DiDm = make_embed_weights(D_vocab, D_model, key)
-    blocks_params = make_blocks_weights(D_model, D_head, n_heads, D_ff, n_blocks, key)
-    w_DmDi = make_unembed_weights(D_model, D_vocab, key)
+def make_model_weights(cfg: ModelCfg, key):
+    w_DiDm = make_embed_weights(cfg.D_vocab, cfg.D_model, key)
+    blocks_params = make_blocks_weights(cfg.D_model, cfg.D_head, cfg.n_heads, cfg.D_ff, cfg.n_blocks, key)
+    w_DmDi = make_unembed_weights(cfg.D_model, cfg.D_vocab, key)
     return w_DiDm, blocks_params, w_DmDi
 
-if __name__ == "__main__":
-    B = 2
-    S = 10
 
-    D_vocab = 16
-    D_model = 32
-    D_head = 8
-    n_heads = 4
-    assert D_head * n_heads == D_model
+@dataclass
+class TrainCfg:
+    batch_size: int
+    seq_len: int
+    n_epochs: int
+    model_cfg: ModelCfg
 
-    D_ff = 64
-    n_blocks = 8
+def fake_main():
+    cfg = TrainCfg(
+        batch_size = 2,
+        seq_len = 10,
+        model_cfg = ModelCfg(
+            D_vocab = 16,
+            D_model = 32,
+            D_head = 8,
+            n_heads = 4,
+            D_ff = 64,
+            n_blocks = 8,
+        )
+    )
+
     key = random.PRNGKey(0)
 
-    model_params = make_model_weights(
-        D_vocab,
-        D_model,
-        D_head,
-        n_heads,
-        D_ff,
-        n_blocks,
-        key,
-    )
+    fake_train(cfg, key)
+    
+
+def fake_train(cfg, key):
+    model_params = make_model_weights(cfg.model_cfg, key)
 
     model_grad = jax.grad(model, has_aux=False)
 
-    for _ in range(0, -1):
-        x, y = create_example()
+    for e in range(cfg.n_epochs):
+        x, y = create_example(cfg.batch_size, cfg.seq_len, cfg.model_cfg.D_vocab)
         y_hat = model_grad(x, model_params)
         loss = jnp.sum((y - y_hat) ** 2)        
         model_params = jax.tree.map(lambda p, g: p - 0.01 * g, model_params, y_hat)
-        
-
-        
 
 
-    
-
-def attention(residual_BSDm: Array, w_qkv_Dm3Dh):
+@jax.jit
+def attention(residual: Array, w_qkv_Dm3Dh):
     '''
-    residual_BSD: (batch, seq_len, dim_model)
+    residual: (batch, seq_len, dim_model)
     w_qkv_Dm3Dh: (d_model, 3 * d_head)
     '''
-    qkv = einsum(residual_BSDm, w_qkv_Dm3Dh, "b s dm, dm dh_x3 -> b s dh_x3")
-    q_BSDh, k_BSDh, v_BSDh = jnp.split(qkv, 3, axis=-1)
-    qkt_BSqSk = einsum(q_BSDh, k_BSDh, "b sq dh, b sk dh -> b sq sk") # QK^T
-    qkt_scaled_BSqSk = qkt_BSqSk / jnp.sqrt(qkt_BSqSk.shape[-1])
-    attn_BSqSk = jax.nn.softmax(qkt_scaled_BSqSk, axis=-1)
-    out = einsum(attn_BSqSk, v_BSDh, 'b s sk, b s dh -> b s dh')
+    qkv = einsum(residual, w_qkv_Dm3Dh, "b s dm, dm dh_x3 -> b s dh_x3")
+    q, k, v = jnp.split(qkv, 3, axis=-1)
+    qkt = einsum(q, k, "b sq dh, b sk dh -> b sq sk") # QK^T
+    qkt_scaled = qkt / jnp.sqrt(qkt.shape[-1])
+    attn = jax.nn.softmax(qkt_scaled, axis=-1)
+    out = einsum(attn, v, 'b s sk, b s dh -> b s dh')
     return out
+
+if __name__ == "__main__":
+    
