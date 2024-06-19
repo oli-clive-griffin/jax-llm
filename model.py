@@ -97,6 +97,7 @@ class ModelCfg:
     def __post_init__(self):
         assert self.D_head * self.n_heads == self.D_model
 
+@jax.jit
 def model(x_BSDi: Array, params):
     w_DiDm, blocks_params, w_DmDi = params
     x_BSDm = embed(x_BSDi, w_DiDm)
@@ -120,6 +121,7 @@ class TrainCfg:
 
 def fake_main():
     cfg = TrainCfg(
+        n_epochs=10,
         batch_size = 2,
         seq_len = 10,
         model_cfg = ModelCfg(
@@ -136,17 +138,20 @@ def fake_main():
 
     fake_train(cfg, key)
     
+def create_example(batch_size: int, seq_len: int, d_vocab: int, key: Array):
+    key, subkey = random.split(key)
+    x = random.randint(subkey, (batch_size, seq_len), 0, d_vocab)
+    key, subkey = random.split(key)
+    y = random.randint(key, (batch_size, seq_len), 0, d_vocab)
+    return x, y, key
 
-def fake_train(cfg, key):
+def fake_train(cfg: TrainCfg, key: Array):
     model_params = make_model_weights(cfg.model_cfg, key)
 
     model_grad = jax.grad(model, has_aux=False)
 
     for e in range(cfg.n_epochs):
-        x, y = create_example(cfg.batch_size, cfg.seq_len, cfg.model_cfg.D_vocab)
-        y_hat = model_grad(x, model_params)
-        loss = jnp.sum((y - y_hat) ** 2)        
-        model_params = jax.tree.map(lambda p, g: p - 0.01 * g, model_params, y_hat)
+        x, y, key = create_example(cfg.batch_size, cfg.seq_len, cfg.model_cfg.D_vocab, key)
 
 
 @jax.jit
@@ -164,4 +169,5 @@ def attention(residual: Array, w_qkv_Dm3Dh):
     return out
 
 if __name__ == "__main__":
-    
+    fake_main()
+#     print(jnp.einsum("batch dim1 dim2, dim2 dim3 -> batch dim1 dim2", jnp.ones((2, 3, 4)), jnp.ones((4, 5))))
