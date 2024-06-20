@@ -3,7 +3,7 @@ from jax import tree_util
 from dataclasses import dataclass
 from jax import random, Array
 import jax.numpy as jnp
-# from model import ModelCfg, model, make_model_weights
+from model_raw import ModelCfg, model, make_model_weights
 
 @dataclass
 class TrainCfg:
@@ -53,7 +53,6 @@ def create_ones_batch(batch_size: int, seq_len: int, d_vocab: int, key: Array):
     key, subkey = random.split(key)
     y = jnp.ones((batch_size, seq_len, d_vocab))
     return x, y
-
 
 def fake_train(cfg: TrainCfg, key: Array):
     params = make_model_weights(cfg.model_cfg, key)
