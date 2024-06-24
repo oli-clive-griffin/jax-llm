@@ -8,6 +8,7 @@ from functools import partial
 
 jax.config.update("jax_debug_nans", True)
 
+
 @dataclass
 class TrainCfg:
     lr: float
@@ -48,6 +49,7 @@ def loss_fn(params, x_BS, y_BSV):
 @jax.jit
 def cross_entropy(logits_x_BSV, y_BSV):
     return -jnp.mean(jnp.sum(y_BSV * jax.nn.log_softmax(logits_x_BSV), axis=-1))
+
 
 @jax.jit
 def update(params, grads, lr):
