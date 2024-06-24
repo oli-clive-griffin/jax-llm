@@ -78,25 +78,24 @@ def make_blocks_weights(D_model, D_head, n_heads, D_ff, n_blocks, key):
 
 # there's gotta be a better way to do this with onehot encoding like nn.Embedding
 @jax.jit
-def embed(x_SDi: Array, w_DiDm: Array):
-    return x_SDi @ w_DiDm
-
+def embed(x_S: Array, w_VDm: Array):
+    return jnp.take(w_VDm, x_S, axis=0)
 
 def make_embed_weights(D_vocab, D_model, key):
     init = jax.nn.initializers.xavier_normal()
-    w_DiDm = init(key, (D_vocab, D_model))
-    return w_DiDm
+    w_VDm = init(key, (D_vocab, D_model))
+    return w_VDm
 
 
 @jax.jit
-def unembed(x_SDm: Array, w_DmDi: Array):
-    return x_SDm @ w_DmDi
+def unembed(x_SDm: Array, w_DmV: Array):
+    return x_SDm @ w_DmV
 
 
 def make_unembed_weights(D_model, D_vocab, key):
     init = jax.nn.initializers.xavier_normal()
-    w_DmDi = init(key, (D_model, D_vocab))
-    return w_DmDi
+    w_DmV = init(key, (D_model, D_vocab))
+    return w_DmV
 
 
 def layer_norm(x, epsilon=1e-5):
@@ -119,12 +118,12 @@ class ModelCfg:
 
 
 @jax.jit
-def model(x_SDi: Array, params):
+def model(x_S: Array, params):
     w_DiDm, blocks_params, w_DmDi = params
-    x_SDm = embed(x_SDi, w_DiDm)
+    x_SDm = embed(x_S, w_DiDm)
     x_SDm = blocks(x_SDm, blocks_params)
-    x_SDi = unembed(x_SDm, w_DmDi)
-    return x_SDi
+    x_SV = unembed(x_SDm, w_DmDi)
+    return x_SV
 
 
 def make_model_weights(cfg: ModelCfg, key):
