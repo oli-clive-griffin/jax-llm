@@ -72,7 +72,7 @@ class Model(nn.Module):
     @classmethod
     def from_config(cls, cfg: ModelCfg):
         return cls(
-            cfg.D_vocab, cfg.D_model, cfg.n_heads, cfg.D_head, cfg.D_ff, cfg.n_blocks
+            cfg.d_vocab, cfg.d_model, cfg.n_heads, cfg.d_head, cfg.d_ff, cfg.n_layers
         )
 
     @nn.compact

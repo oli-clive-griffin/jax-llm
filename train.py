@@ -20,12 +20,11 @@ class TrainCfg:
 
 def fake_main():
     model_cfg = ModelCfg(
-        D_vocab=16,
-        D_model=128,
-        D_head=32,
+        d_vocab=16,
+        d_model=128,
         n_heads=4,
-        D_ff=64,
-        n_blocks=2,
+        mlp_ratio=4,
+        n_layers=2,
     )
 
     cfg = TrainCfg(
@@ -71,9 +70,9 @@ def fake_train(cfg: TrainCfg, key: Array):
     for epoch in range(cfg.n_epochs):
         key, subkey = random.split(key)
         x, y = create_id_batch(
-            cfg.batch_size, cfg.seq_len, cfg.model_cfg.D_vocab, subkey
+            cfg.batch_size, cfg.seq_len, cfg.model_cfg.d_vocab, subkey
         )
-        y_BSV = jax.nn.one_hot(y, cfg.model_cfg.D_vocab)
+        y_BSV = jax.nn.one_hot(y, cfg.model_cfg.d_vocab)
         loss, grads = loss_grad(params, x, y_BSV)
         params = update(params, grads, cfg.lr)
         if epoch % 100 == 0:
