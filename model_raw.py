@@ -66,10 +66,22 @@ def make_mha_params(d_model, d_head, n_heads, key):
     return (w_qkv_NM3H, b_qkv_N3H), o_AM
 
 
+def swish(beta: float | None, x: Array):
+    return x * jax.nn.sigmoid(beta or 1. * x)
+
+
+def swiglu(params: tuple[Array, ...], beta: float, x_SM: Array):
+    w1_MH, b1_H, w3_HM, b3_M = params
+    return (
+        swish(beta, x_SM @ w1_MH + b1_H) *
+        swish(beta, x_SM @ w3_HM + b3_M)
+    )
+
+
 @jax.jit
-def ff(params: tuple[Array, Array, Array, Array], x_SM: Array):
-    w1_MH, b1_H, w2_HM, b2_M = params
-    x_SH = x_SM @ w1_MH + b1_H
+def ffn(params: tuple[Array, float], swish_beta, x_SM: Array):
+    swiglu_params, w2_HM, b2_M,  = params
+    x_SH = swiglu(swiglu_params, swish_beta, x_SM)
     x_SM = x_SH @ w2_HM + b2_M
     return x_SM
 
@@ -86,12 +98,12 @@ def make_ff_params(d_model, mlp_ratio, key):
 
 
 @jax.jit
-def block(params, res_SM: Array):
+def block(params, swish_beta, res_SM: Array):
     ln1_params, qkv_HM3H, ln2_params, ff_params = params
     x = layer_norm(ln1_params, res_SM)
     x = multihead_causal_self_attention(qkv_HM3H, x)
     x = layer_norm(ln2_params, x)
-    x = ff(ff_params, x)
+    x = ffn(ff_params, swish_beta, x)
     return x
 
 
@@ -138,6 +150,7 @@ class ModelCfg:
     n_heads: int
     mlp_ratio: int
     n_layers: int
+    swish_beta: float = 1.0
 
     def __post_init__(self):
         assert self.d_model % self.n_heads == 0
@@ -145,7 +158,7 @@ class ModelCfg:
 
 
 @jax.jit
-def model(params, x_S: Array):
+def model(params, swish_beta: float, x_S: Array):
     w_VM, blocks_params, final_layer_norm_params, w_MV = params
 
     # embed
@@ -153,7 +166,7 @@ def model(params, x_S: Array):
 
     # layers
     for block_params in blocks_params:
-        x_SM = block(block_params, x_SM)
+        x_SM = block(block_params, swish_beta, x_SM)
     x_SM = layer_norm(final_layer_norm_params, x_SM)
     
     # unembed
@@ -171,35 +184,14 @@ def make_model_params(cfg: ModelCfg, key):
 if __name__ == "__main__":
     key = jax.random.PRNGKey(0)
     key, subkey = jax.random.split(key)
-    params = make_model_params(
-        ModelCfg(
+    cfg = ModelCfg(
             d_vocab=16,
             d_model=128,
             n_heads=4,
             mlp_ratio=4,
             n_layers=2,
-        ),
-        subkey,
-    )
-    model_b = jax.vmap(model, in_axes=(None, 0))
-    out = model_b(params, jnp.array([[4, 5, 3], [1, 2, 3]]))
-
-
-from typing import Iterator
-
-def train_bpe(chunk_iter: Iterator[str]):
-    def train_step(): ...
-
-    for chunk in chunk_iter:
-        train_step()
-
-def user_train():
-    with open('huge.txt') as f:
-        chunk_iterator = iter(lambda: f.read(1024), '')
-        for chunk in chunk_iterator:
-            print(chunk)
-        # print(len())
-        # train_bpe(chunk_iterator)
-    
-def create_unicode_
-user_train()
+            swish_beta=1.0,
+        )
+    params = make_model_params(cfg, subkey)
+    model_b = jax.vmap(model, in_axes=(None, None, 0))
+    out = model_b(params, cfg.swish_beta, jnp.array([[4, 5, 3], [1, 2, 3]]))
