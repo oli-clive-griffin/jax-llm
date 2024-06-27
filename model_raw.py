@@ -1,4 +1,5 @@
 import jax
+from functools import partial
 from dataclasses import dataclass
 from jax import Array
 import jax.numpy as jnp
@@ -67,37 +68,50 @@ def make_mha_params(d_model, d_head, n_heads, key):
 
 
 def swish(beta: float | None, x: Array):
-    return x * jax.nn.sigmoid(beta or 1. * x)
-
+    return x * jax.nn.sigmoid(beta or 1.0 * x)
 
 def swiglu(params: tuple[Array, ...], beta: float, x_SM: Array):
     w1_MH, b1_H, w3_HM, b3_M = params
-    return (
-        swish(beta, x_SM @ w1_MH + b1_H) *
-        swish(beta, x_SM @ w3_HM + b3_M)
-    )
+    return swish(beta, x_SM @ w1_MH + b1_H) * swish(beta, x_SM @ w3_HM + b3_M)
+
+def make_swiglu_params(d_model, mlp_ratio, key):
+    hidden_dim = d_model * mlp_ratio
+    init = jax.nn.initializers.xavier_normal()
 
 
-@jax.jit
-def ffn(params: tuple[Array, float], swish_beta, x_SM: Array):
-    swiglu_params, w2_HM, b2_M,  = params
+    key, subkey = jax.random.split(key)
+    w1_MH = init(subkey, (d_model, hidden_dim))
+    b1_H = jnp.zeros(hidden_dim)
+
+    key, subkey = jax.random.split(key)
+    w3_HM = init(subkey, (d_model, hidden_dim))
+
+    b3_M = jnp.zeros(hidden_dim)
+
+    return w1_MH, b1_H, w3_HM, b3_M
+
+@partial(jax.jit, static_argnames=('swish_beta',))
+def ffn(params: tuple[Array, float], swish_beta: float, x_SM: Array):
+    swiglu_params, w2_HM, b2_M = params
     x_SH = swiglu(swiglu_params, swish_beta, x_SM)
     x_SM = x_SH @ w2_HM + b2_M
     return x_SM
 
 
-def make_ff_params(d_model, mlp_ratio, key):
-    init1 = jax.nn.initializers.xavier_normal()
-    init2 = jax.nn.initializers.xavier_normal()
+def make_ff_params(d_model: int, mlp_ratio: int, key):
     hidden_dim = d_model * mlp_ratio
-    w1_MH = init1(key, (d_model, hidden_dim))
-    b1_H = jnp.zeros(hidden_dim)
-    w2_HM = init2(key, (hidden_dim, d_model))
+
+    key, subkey = jax.random.split(key)
+    swiglu_params = make_swiglu_params(d_model, mlp_ratio, subkey)
+
+    init = jax.nn.initializers.xavier_normal()
+    w2_HM = init(key, (hidden_dim, d_model))
     b2_M = jnp.zeros(d_model)
-    return w1_MH, b1_H, w2_HM, b2_M
+
+    return swiglu_params, w2_HM, b2_M
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=('swish_beta',))
 def block(params, swish_beta, res_SM: Array):
     ln1_params, qkv_HM3H, ln2_params, ff_params = params
     x = layer_norm(ln1_params, res_SM)
@@ -157,7 +171,7 @@ class ModelCfg:
         self.d_head = self.d_model // self.n_heads
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=('swish_beta',))
 def model(params, swish_beta: float, x_S: Array):
     w_VM, blocks_params, final_layer_norm_params, w_MV = params
 
@@ -168,16 +182,23 @@ def model(params, swish_beta: float, x_S: Array):
     for block_params in blocks_params:
         x_SM = block(block_params, swish_beta, x_SM)
     x_SM = layer_norm(final_layer_norm_params, x_SM)
-    
+
     # unembed
     return x_SM @ w_MV
 
 
 def make_model_params(cfg: ModelCfg, key):
-    w_VM = make_embed_params(cfg.d_vocab, cfg.d_model, key)
-    blocks_params = make_blocks_params(cfg.d_model, cfg.d_head, cfg.n_heads, cfg.mlp_ratio, cfg.n_layers, key)
+    key, subkey = jax.random.split(key)
+    w_VM = make_embed_params(cfg.d_vocab, cfg.d_model, subkey)
+
+    key, subkey = jax.random.split(key)
+    blocks_params = make_blocks_params(cfg.d_model, cfg.d_head, cfg.n_heads, cfg.mlp_ratio, cfg.n_layers, subkey)
+
     final_layer_norm_params = make_layer_norm_params(cfg.d_model)
-    w_MV = make_unembed_params(cfg.d_model, cfg.d_vocab, key)
+
+    key, subkey = jax.random.split(key)
+    w_MV = make_unembed_params(cfg.d_model, cfg.d_vocab, subkey)
+
     return w_VM, blocks_params, final_layer_norm_params, w_MV
 
 
@@ -185,13 +206,13 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(0)
     key, subkey = jax.random.split(key)
     cfg = ModelCfg(
-            d_vocab=16,
-            d_model=128,
-            n_heads=4,
-            mlp_ratio=4,
-            n_layers=2,
-            swish_beta=1.0,
-        )
+        d_vocab=16,
+        d_model=128,
+        n_heads=4,
+        mlp_ratio=4,
+        n_layers=2,
+        swish_beta=1.0,
+    )
     params = make_model_params(cfg, subkey)
     model_b = jax.vmap(model, in_axes=(None, None, 0))
     out = model_b(params, cfg.swish_beta, jnp.array([[4, 5, 3], [1, 2, 3]]))
