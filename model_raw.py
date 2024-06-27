@@ -21,18 +21,19 @@ def mask(seq_len: int):
     return jnp.where(jnp.tril(jnp.ones((seq_len, seq_len))), 0, -1e9)
 
 
-def fused_qkv(qkv_NM3H: Array, residual_SM: Array):
-    qkv_NS3H = jnp.einsum('sm,nmh->nsh', residual_SM, qkv_NM3H)
-    # qkv_NS3H = residual_SM @ qkv_NM3H
+def fused_qkv(params: tuple[Array, Array], residual_SM: Array):
+    qkv_NM3H, b_N3H = params
+    qkv_NS3H = jnp.einsum("sm,nmh,nh->nsh", residual_SM, qkv_NM3H, b_N3H)
     q_NSH, k_NSH, v_NSH = jnp.split(qkv_NS3H, 3, axis=-1)
     return q_NSH, k_NSH, v_NSH
 
+
 @jax.jit
-def mha(params, residual_SM: Array):
-    qkv_NM3H, o_AM = params
+def multihead_causal_self_attention(params, residual_SM: Array):
+    fused_qkv_params, o_AM = params
 
     # scaled Q @K^T
-    q_NSH, k_NSH, v_NSH = fused_qkv(qkv_NM3H, residual_SM)
+    q_NSH, k_NSH, v_NSH = fused_qkv(fused_qkv_params, residual_SM)
     n_heads, S, d_head = q_NSH.shape
 
     qkt_NSqSk = q_NSH @ jnp.matrix_transpose(k_NSH)  # q * k^T
@@ -55,12 +56,14 @@ def mha(params, residual_SM: Array):
 
     return out_SM
 
+
 def make_mha_params(d_model, d_head, n_heads, key):
     init = jax.nn.initializers.xavier_normal()
-    qkv_NM3H = init(key, (n_heads, d_model, 3 * d_head))
+    w_qkv_NM3H = init(key, (n_heads, d_model, 3 * d_head))
+    b_qkv_N3H = init(key, (n_heads, 3 * d_head))
     d_attn = n_heads * d_head
     o_AM = init(key, (d_attn, d_model))
-    return qkv_NM3H, o_AM
+    return (w_qkv_NM3H, b_qkv_N3H), o_AM
 
 
 @jax.jit
@@ -86,7 +89,7 @@ def make_ff_params(d_model, mlp_ratio, key):
 def block(params, res_SM: Array):
     ln1_params, qkv_HM3H, ln2_params, ff_params = params
     x = layer_norm(ln1_params, res_SM)
-    x = mha(qkv_HM3H, x)
+    x = multihead_causal_self_attention(qkv_HM3H, x)
     x = layer_norm(ln2_params, x)
     x = ff(ff_params, x)
     return x
@@ -100,31 +103,14 @@ def make_block_params(d_model, d_head, n_heads, mlp_ratio, key):
     return ln1_params, mha_params, ln2_params, ff_params
 
 
-@jax.jit
-def blocks(blocks_params: Array, x_SM: Array):
-    for block_params in blocks_params:
-        x_SM = block(block_params, x_SM)
-    return x_SM
-
-
 def make_blocks_params(d_model, d_head, n_heads, mlp_ratio, n_layers, key):
     return [make_block_params(d_model, d_head, n_heads, mlp_ratio, key) for _ in range(n_layers)]
-
-
-@jax.jit
-def embed(w_VM: Array, x_S: Array):
-    return jnp.take(w_VM, x_S, axis=0)
 
 
 def make_embed_params(d_vocab, d_model, key):
     init = jax.nn.initializers.xavier_normal()
     w_VM = init(key, (d_vocab, d_model))
     return w_VM
-
-
-@jax.jit
-def unembed(w_MV: Array, x_SM: Array):
-    return x_SM @ w_MV
 
 
 def make_unembed_params(d_model, d_vocab, key):
@@ -161,11 +147,17 @@ class ModelCfg:
 @jax.jit
 def model(params, x_S: Array):
     w_VM, blocks_params, final_layer_norm_params, w_MV = params
-    x_SM = embed(w_VM, x_S)
-    x_SM = blocks(blocks_params, x_SM)
+
+    # embed
+    x_SM = w_VM[x_S]
+
+    # layers
+    for block_params in blocks_params:
+        x_SM = block(block_params, x_SM)
     x_SM = layer_norm(final_layer_norm_params, x_SM)
-    x_SV = unembed(w_MV, x_SM)
-    return x_SV
+    
+    # unembed
+    return x_SM @ w_MV
 
 
 def make_model_params(cfg: ModelCfg, key):
@@ -191,3 +183,23 @@ if __name__ == "__main__":
     )
     model_b = jax.vmap(model, in_axes=(None, 0))
     out = model_b(params, jnp.array([[4, 5, 3], [1, 2, 3]]))
+
+
+from typing import Iterator
+
+def train_bpe(chunk_iter: Iterator[str]):
+    def train_step(): ...
+
+    for chunk in chunk_iter:
+        train_step()
+
+def user_train():
+    with open('huge.txt') as f:
+        chunk_iterator = iter(lambda: f.read(1024), '')
+        for chunk in chunk_iterator:
+            print(chunk)
+        # print(len())
+        # train_bpe(chunk_iterator)
+    
+def create_unicode_
+user_train()
