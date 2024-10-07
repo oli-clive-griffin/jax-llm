@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from jax import Array
 import jax.numpy as jnp
 import jax.nn
+import jax.test_util
 
 # dims
 # ====
@@ -16,10 +17,40 @@ import jax.nn
 # S: seq_len
 # (no batch size cos vmap)
 
+THETA = 10_000
+@jax.jit
+def rope(dim: int, max_len: int):
+    freqs = 1.0 / (THETA ** (jnp.arange(0, dim, 2)[: (dim // 2)] / dim))
+    t = jnp.arange(max_len)
+    freqs = jnp.outer(t, freqs).astype(jnp.float32)
+    return jnp.exp(1j * freqs)
 
-# should optimise by precomputing the mask
-def mask(seq_len: int):
-    return jnp.where(jnp.tril(jnp.ones((seq_len, seq_len))), 0, -1e9)
+def apply_rope(x_SD: Array, freqs: Array):
+    S, D = x_SD.shape
+    x_complex = jnp.reshape(x_SD, (S, D // 2, 2)).view(jnp.complex64)
+
+
+def apply_rotary_emb(x, freqs_cis):
+    x_complex = np.view_as_complex(x.reshape(*x.shape[:-1], -1, 2))
+    return (x_complex * freqs_cis).view(dtype=np.float32).reshape(*x.shape)
+
+# Usage
+pos = 5
+x = np.random.randn(d_model)  # Your embedding
+rotated_x = apply_rotary_emb(x, freqs_cis[pos])
+    
+
+
+@partial(jax.jit, static_argnames=("max_len",))
+def create_static_mask(max_len: int):
+    return jnp.where(jnp.tril(jnp.ones((max_len, max_len))), 0, -1e9)
+
+
+MASK = create_static_mask(1000)
+
+
+def mask(len: int):
+    return MASK[:len, :len]
 
 
 def fused_qkv(params: tuple[Array, Array], residual_SM: Array):
@@ -70,14 +101,15 @@ def make_mha_params(d_model, d_head, n_heads, key):
 def swish(beta: float | None, x: Array):
     return x * jax.nn.sigmoid(beta or 1.0 * x)
 
+
 def swiglu(params: tuple[Array, ...], beta: float, x_SM: Array):
     w1_MH, b1_H, w3_HM, b3_M = params
     return swish(beta, x_SM @ w1_MH + b1_H) * swish(beta, x_SM @ w3_HM + b3_M)
 
+
 def make_swiglu_params(d_model, mlp_ratio, key):
     hidden_dim = d_model * mlp_ratio
     init = jax.nn.initializers.xavier_normal()
-
 
     key, subkey = jax.random.split(key)
     w1_MH = init(subkey, (d_model, hidden_dim))
@@ -90,7 +122,8 @@ def make_swiglu_params(d_model, mlp_ratio, key):
 
     return w1_MH, b1_H, w3_HM, b3_M
 
-@partial(jax.jit, static_argnames=('swish_beta',))
+
+@partial(jax.jit, static_argnames=("swish_beta",))
 def ffn(params: tuple[Array, float], swish_beta: float, x_SM: Array):
     swiglu_params, w2_HM, b2_M = params
     x_SH = swiglu(swiglu_params, swish_beta, x_SM)
@@ -100,18 +133,15 @@ def ffn(params: tuple[Array, float], swish_beta: float, x_SM: Array):
 
 def make_ff_params(d_model: int, mlp_ratio: int, key):
     hidden_dim = d_model * mlp_ratio
-
     key, subkey = jax.random.split(key)
     swiglu_params = make_swiglu_params(d_model, mlp_ratio, subkey)
-
     init = jax.nn.initializers.xavier_normal()
     w2_HM = init(key, (hidden_dim, d_model))
     b2_M = jnp.zeros(d_model)
-
     return swiglu_params, w2_HM, b2_M
 
 
-@partial(jax.jit, static_argnames=('swish_beta',))
+@partial(jax.jit, static_argnames=("swish_beta",))
 def block(params, swish_beta, res_SM: Array):
     ln1_params, qkv_HM3H, ln2_params, ff_params = params
     x = layer_norm(ln1_params, res_SM)
@@ -171,7 +201,7 @@ class ModelCfg:
         self.d_head = self.d_model // self.n_heads
 
 
-@partial(jax.jit, static_argnames=('swish_beta',))
+@partial(jax.jit, static_argnames=("swish_beta",))
 def model(params, swish_beta: float, x_S: Array):
     w_VM, blocks_params, final_layer_norm_params, w_MV = params
 

@@ -75,3 +75,29 @@ def fake_main():
 
 if __name__ == "__main__":
     fake_main()
+
+
+def fake_train(cfg: TrainCfg, key: Array):
+    params = make_model_params(cfg.model_cfg, key)
+
+    loss_grad = jax.value_and_grad(loss_fn)
+    def loss(): ...
+    batch = ...
+
+    example_x, example_y = ...
+    def initialize_params(): ...
+
+
+    def loss(params, x, y):
+        prediction = model(params, x)
+        return cross_entropy(prediction, y)
+    
+
+    params = initialize_params()
+
+    grad_loss = jax.grad(loss)
+
+    for x, y in batch:
+        grads = grad_loss(params, x, y)
+
+        params = update(params, grads)
